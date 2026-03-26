@@ -1,4 +1,0 @@
-python-telegram-bot[job-queue]
-httpx
-pytz
-google-generativeai
