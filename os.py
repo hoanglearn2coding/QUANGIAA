@@ -26,7 +26,7 @@ DATA_DIR = "/data"
 if not os.path.exists(DATA_DIR):
     try: os.makedirs(DATA_DIR, exist_ok=True)
     except Exception: DATA_DIR = "." 
-DATA_FILE = os.path.join(DATA_DIR, "supreme_v10_data.json")
+DATA_FILE = os.path.join(DATA_DIR, "supreme_v11_data.json")
 
 # --- Cấu hình Gemini AI ---
 genai.configure(api_key=GENAI_API_KEY)
@@ -35,7 +35,7 @@ system_prompt = (
     "NGUYÊN TẮC TƯ DUY:\n"
     "1. CHUYÊN GIA BÓNG ĐÁ (⚽): Hiểu rõ phong độ, chiến thuật, chấn thương.\n"
     "2. CHUYÊN GIA BÓNG RỔ & NBA (🏀/🌟): Nắm vững kiến thức cực sâu về NBA, cầu thủ, chiến thuật, matchup tay đôi.\n"
-    "3. NHẬN XÉT SÂU SẮC: Phân tích lý do tại sao thắng/thua, yếu tố con người và cảnh báo rủi ro dựa trên[Hồ sơ Ông chủ].\n"
+    "3. NHẬN XÉT SÂU SẮC: Phân tích lý do tại sao thắng/thua, yếu tố con người và cảnh báo rủi ro dựa trên [Hồ sơ Ông chủ].\n"
     "4. TỔNG KẾT: Luôn đưa ra chốt kèo rõ ràng hoặc kết luận sắc bén."
 )
 ai_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=system_prompt, generation_config=genai.types.GenerationConfig(temperature=0.55))
@@ -57,33 +57,31 @@ def load_data():
                 if "profile" not in state: state["profile"] =[]
         except Exception as e: logging.error(f"Lỗi đọc file: {e}")
 
-def parse_match_time(utc_date_str):
+# FIX CỰC MẠNH: Xử lý giờ chuẩn VN (Không cộng dồn UTC nữa)
+def parse_match_time(date_str):
     try:
-        dt = datetime.strptime(utc_date_str.split('+')[0], "%Y-%m-%dT%H:%M:%S")
-        if utc_date_str.endswith('Z'): dt = datetime.strptime(utc_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-        dt = dt.replace(tzinfo=pytz.UTC).astimezone(VN_TZ)
+        # API trả về: 2026-03-27T19:30:00+07:00 (Vì đã có tham số timezone)
+        # Bóc tách chính xác lấy YYYY-MM-DDTHH:MM:SS
+        clean_str = date_str[:19]
+        dt = datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
+        dt = VN_TZ.localize(dt)
         return dt.strftime("%H:%M"), dt.timestamp()
-    except Exception: return "00:00", 0
+    except Exception as e: 
+        logging.error(f"Lỗi parse giờ: {e}")
+        return "00:00", 0
 
-# HÀM MỚI: Kiểm tra xem trận đấu đã kết thúc hay chưa (Để lọc bỏ khỏi tìm kiếm)
 def is_finished(m, sport):
     try:
-        if sport == 'f':
-            # Loại bỏ các trận Đã xong, Hủy, Hoãn
-            return m['fixture']['status']['short'] in['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'AWD', 'WO']
-        elif sport == 'n':
-            return str(m['status']['short']) in['3', 'FT', 'AOT', 'CANC', 'PST']
-        elif sport == 'b':
-            return str(m['status']['short']) in['FT', 'AOT', 'CANC', 'POST', 'ABD']
-    except Exception:
-        return False
+        if sport == 'f': return m['fixture']['status']['short'] in['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'AWD', 'WO']
+        elif sport == 'n': return str(m['status']['short']) in['3', 'FT', 'AOT', 'CANC', 'PST']
+        elif sport == 'b': return str(m['status']['short']) in['FT', 'AOT', 'CANC', 'POST', 'ABD']
+    except Exception: return False
     return False
 
 def parse_date_and_query(args):
     now = datetime.now(VN_TZ)
     target_date = now.strftime("%Y-%m-%d")
     query_parts =[]
-    
     for arg in args:
         if "/" in arg and any(c.isdigit() for c in arg):
             try:
@@ -92,8 +90,7 @@ def parse_date_and_query(args):
                 y = int(parts[2]) if len(parts) > 2 else now.year
                 target_date = f"{y}-{m:02d}-{d:02d}"
             except Exception: query_parts.append(arg)
-        else:
-            query_parts.append(arg)
+        else: query_parts.append(arg)
     return target_date, " ".join(query_parts).lower()
 
 def get_flattened_board():
@@ -103,32 +100,45 @@ def get_flattened_board():
     matches.sort(key=lambda x: x.get("timestamp", 0))
     return matches
 
+# FIX CỰC MẠNH: Cải thiện lấy lịch sử đấu (3 trận gần nhất)
 async def get_match_context(m):
     sport = m.get("sport", "f")
     home_id, away_id = m.get("home_id"), m.get("away_id")
     league = m.get("league", "Không rõ giải")
     
-    if sport == "f":
+    if sport == "f" and home_id and away_id:
         try:
-            res_h = await client.get(f"https://v3.football.api-sports.io/fixtures?team={home_id}&last=2{TZ_PARAM}")
-            res_a = await client.get(f"https://v3.football.api-sports.io/fixtures?team={away_id}&last=2{TZ_PARAM}")
-            def fmt_f(data):
-                lines =[f"   + {f['fixture']['date'][:10]}: {f['teams']['home']['name']} {f['goals']['home'] if f['goals']['home'] is not None else '?'}-{f['goals']['away'] if f['goals']['away'] is not None else '?'} {f['teams']['away']['name']}" for f in data.json().get("response",[])]
-                return "\n".join(lines) if lines else "   + Không có"
+            # Lấy 3 trận gần nhất để đảm bảo có dữ liệu
+            res_h = await client.get(f"https://v3.football.api-sports.io/fixtures?team={home_id}&last=3{TZ_PARAM}")
+            res_a = await client.get(f"https://v3.football.api-sports.io/fixtures?team={away_id}&last=3{TZ_PARAM}")
+            
+            def fmt_f(res_data):
+                data = res_data.json().get("response",[])
+                if not data: return "   + Không có dữ liệu lịch sử gần đây."
+                lines =[]
+                for f in data:
+                    date_str = f['fixture']['date'][:10]
+                    h_team, a_team = f['teams']['home']['name'], f['teams']['away']['name']
+                    hg, ag = f['goals']['home'], f['goals']['away']
+                    score = f"{hg}-{ag}" if hg is not None and ag is not None else "?-?"
+                    lines.append(f"   + {date_str}: {h_team} {score} {a_team}")
+                return "\n".join(lines)
             return league, fmt_f(res_h), fmt_f(res_a)
-        except: return league, "Lỗi API", "Lỗi API"
+        except Exception as e: 
+            logging.error(f"Lỗi lấy lịch sử FB: {e}")
+            return league, "Lỗi kết nối API lịch sử.", "Lỗi kết nối API lịch sử."
     else:
-        return league, "Sử dụng kiến thức AI siêu việt để mổ xẻ trận này.", "Phân tích Matchup cá nhân và chiến thuật."
+        return league, "Dữ liệu lịch sử Bóng Rổ/NBA được cập nhật trực tiếp qua kho tri thức AI.", "Phân tích Matchup cá nhân và chiến thuật."
 
 # ===== 3. MENU START =====
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["chat_id"] = update.effective_chat.id
     save_data()
     menu = (
-        "🤵 **AI COMMANDER V10 - THỂ THAO TỐI THƯỢNG**\n\n"
+        "🤵 **AI COMMANDER V11 - FIXED BUGS & STABLE**\n\n"
         "🧠 **[ BỘ NÃO AI ]**\n"
         " ├ 💬 *Chat tự do để hỏi lịch, chiến thuật*\n"
-        " ├ 📥 `/learn [Sở thích]` : Dạy AI nhớ gu\n"
+        " ├ 📥 `/learn[Sở thích]` : Dạy AI nhớ gu\n"
         " ├ 📋 `/profile` : Xem hồ sơ\n"
         " └ 📊 `/summary` : Tổng kết ngày\n\n"
         "⚽🏀🌟 **[ TÌM KIẾM THỂ THAO ]**\n"
@@ -180,7 +190,7 @@ async def natural_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"🤖 **AI:**\n{response.text}")
     except Exception: await update.message.reply_text("❌ Hệ thống nơ-ron đang bận.")
 
-# ===== 5. TÌM KIẾM THÔNG MINH (CÓ LỌC TRẬN ĐÃ XONG) =====
+# ===== 5. TÌM KIẾM THÔNG MINH =====
 async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_date, _ = parse_date_and_query(context.args)
     kb =[]
@@ -204,8 +214,8 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not kb: return await update.message.reply_text(f"📭 Không có trận nào (chưa đá) vào ngày {target_date}.")
     
-    msg = f"📅 **LỊCH THỂ THAO ({target_date}) - CHỈ HIỆN TRẬN CHƯA ĐÁ:**"
-    if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 trận đầu tiên. Dùng /search để tìm chi tiết hơn)*"
+    msg = f"📅 **LỊCH THỂ THAO ({target_date}):**"
+    if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 trận đầu tiên)*"
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -218,7 +228,7 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res_f = await client.get(f"https://v3.football.api-sports.io/fixtures?date={target_date}{TZ_PARAM}")
         for m in res_f.json().get("response",[]):
             if not is_finished(m, 'f') and (query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or query in m['league']['name'].lower()):
-                kb.append([InlineKeyboardButton(f"⚽ [{parse_match_time(m['fixture']['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
+                kb.append([InlineKeyboardButton(f"⚽[{parse_match_time(m['fixture']['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
         
         res_n = await client.get(f"https://v2.nba.api-sports.io/games?date={target_date}{TZ_PARAM}")
         for m in res_n.json().get("response",[]):
@@ -233,7 +243,7 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not kb: return await update.message.reply_text(f"ℹ️ Không tìm thấy '{query.upper()}' (chưa đá) trong ngày {target_date}.")
     
-    msg = f"🔍 **KẾT QUẢ CHO '{query.upper()}' ({target_date}) - CHỈ TRẬN CHƯA ĐÁ:**"
+    msg = f"🔍 **KẾT QUẢ CHO '{query.upper()}' ({target_date}):**"
     if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 kết quả đầu)*"
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
@@ -260,11 +270,11 @@ async def time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
     
     if not kb: return await update.message.reply_text(f"ℹ️ Không có trận (chưa đá) khung giờ `{target_time}` ngày {target_date}.")
-    msg = f"⏰ **KẾT QUẢ KHUNG GIỜ {target_time} ({target_date}) - CHỈ TRẬN CHƯA ĐÁ:**"
+    msg = f"⏰ **KẾT QUẢ KHUNG GIỜ {target_time} ({target_date}):**"
     if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 kết quả đầu)*"
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-# ===== 6. TỰ ĐỘNG BÁO CÁO KHI PICK (CHỨC NĂNG SIÊU VIỆT) =====
+# ===== 6. XỬ LÝ NÚT BẤM (CÓ BỌC LỖI AI CỰC MẠNH) =====
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -306,29 +316,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["boards"][actual_date].append(new_match)
             save_data()
             
-            # Trả lời query nhanh để bot không bị loading
             await query.answer(f"✅ Đã thêm: {new_match['home']} vs {new_match['away']}", show_alert=False)
             
-            # TỰ ĐỘNG BÁO CÁO LỊCH SỬ MATCH
             await context.bot.send_chat_action(chat_id=query.message.chat_id, action="typing")
             league, home_last, away_last = await get_match_context(new_match)
             
             active_boards = get_flattened_board()
-            idx = len(active_boards) - 1 # Vị trí của trận vừa thêm
+            idx = len(active_boards) - 1 
             
             msg = (f"✅ **ĐÃ THÊM VÀO BOARD:** {icon} {new_match['home']} vs {new_match['away']} (Lúc {t_str} ngày {actual_date})\n"
                    f"🏆 **GIẢI ĐẤU:** {league}\n\n"
                    f"🛡️ **THÔNG TIN ({new_match['home']}):**\n{home_last}\n\n"
                    f"⚔️ **THÔNG TIN ({new_match['away']}):**\n{away_last}")
             
-            kb = [[InlineKeyboardButton("📝 Thêm ghi chú ngay", callback_data=f"asknote_m_{idx}")],[InlineKeyboardButton("🔮 AI Phân Tích & Soi Kèo", callback_data=f"ai_predict_{idx}")]
-            ]
+            kb = [[InlineKeyboardButton("📝 Thêm ghi chú ngay", callback_data=f"asknote_m_{idx}")],[InlineKeyboardButton("🔮 AI Phân Tích & Soi Kèo", callback_data=f"ai_predict_{idx}")]]
             
-            await context.bot.send_message(
-                query.message.chat_id, 
-                msg, 
-                reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
-            )
+            await context.bot.send_message(query.message.chat_id, msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
         except Exception as e: 
             logging.error(f"Lỗi thêm trận: {e}")
             await query.answer("Lỗi thêm trận!", show_alert=True)
@@ -338,24 +341,40 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"👉 Gõ lệnh:\n`/tnote {idx}[Nội dung]`" if kind == "t" else f"👉 Gõ lệnh:\n`/mnote {idx} [Nội dung]`", parse_mode="Markdown")
         await query.answer()
 
+    # FIX CỰC MẠNH: Bọc lỗi Timeout và Crash cho AI Predict
     elif data.startswith("ai_predict_"):
-        idx = int(data.split("_")[2])
-        active_boards = get_flattened_board()
-        if idx >= len(active_boards): return await query.answer("Lỗi dữ liệu!", show_alert=True)
+        try:
+            idx = int(data.split("_")[2])
+            active_boards = get_flattened_board()
+            if idx >= len(active_boards): 
+                return await query.answer("Lỗi dữ liệu trận đã bị xóa!", show_alert=True)
+            
+            m = active_boards[idx]
+            # Trả lời query ngay lập tức để tắt icon loading quay quay
+            await query.answer("AI đang soi kèo... Vui lòng đợi 5s!", show_alert=False)
+            
+            await context.bot.send_chat_action(chat_id=query.message.chat_id, action="typing")
+            
+            league, home_last, away_last = await get_match_context(m)
+            prompt = (f"Phân tích trận {m.get('icon','⚽')}: {m['home']} vs {m['away']} ({league}).\nLịch sử {m['home']}:\n{home_last}\nLịch sử {m['away']}:\n{away_last}\n"
+                      f"HỒ SƠ: {' '.join(state.get('profile',[]))}\n"
+                      "PHẢN BIỆN CHUYÊN SÂU: Nếu bóng đá, đánh giá đội hình, chiến thuật. Nếu bóng rổ/NBA, hãy mang số liệu, phong độ, matchup tay đôi ra để mổ xẻ. Chốt kèo thông minh.")
+            
+            chat_id = query.message.chat_id
+            if chat_id not in chat_sessions: chat_sessions[chat_id] = ai_model.start_chat(history=[])
+            
+            # Đặt Timeout 25s để tránh AI bị treo vô hạn
+            response = await asyncio.wait_for(
+                asyncio.to_thread(chat_sessions[chat_id].send_message, prompt),
+                timeout=25.0
+            )
+            await context.bot.send_message(query.message.chat_id, f"🔮 **AI SOI KÈO ({m.get('icon','⚽')} {m['home']} vs {m['away']}):**\n\n{response.text}", parse_mode="Markdown")
         
-        m = active_boards[idx]
-        await query.answer("AI đang phân tích...", show_alert=False)
-        await context.bot.send_chat_action(chat_id=query.message.chat_id, action="typing")
-        
-        league, home_last, away_last = await get_match_context(m)
-        prompt = (f"Phân tích trận {m.get('icon','⚽')}: {m['home']} vs {m['away']} ({league}).\nLịch sử {m['home']}:\n{home_last}\nLịch sử {m['away']}:\n{away_last}\n"
-                  f"HỒ SƠ: {' '.join(state.get('profile',[]))}\n"
-                  "PHẢN BIỆN CHUYÊN SÂU: Hãy mang số liệu, phong độ, matchup tay đôi ra để mổ xẻ. Chốt kèo thông minh.")
-        
-        chat_id = query.message.chat_id
-        if chat_id not in chat_sessions: chat_sessions[chat_id] = ai_model.start_chat(history=[])
-        response = await asyncio.to_thread(chat_sessions[chat_id].send_message, prompt)
-        await query.message.reply_text(f"🔮 **AI SOI KÈO ({m.get('icon','⚽')} {m['home']} vs {m['away']}):**\n\n{response.text}")
+        except asyncio.TimeoutError:
+            await context.bot.send_message(query.message.chat_id, "❌ Lỗi: AI đang quá tải hoặc mạng chập chờn, vui lòng bấm soi kèo lại sau nhé Ông chủ!")
+        except Exception as e:
+            logging.error(f"Lỗi AI Predict: {e}")
+            await context.bot.send_message(query.message.chat_id, "❌ Lỗi hệ thống AI (Có thể do API Key hoặc dữ liệu đầu vào không hợp lệ).")
 
 # ===== 7. QUẢN LÝ BẢNG TỔNG (GLOBAL BOARD) =====
 async def board_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -542,7 +561,7 @@ async def monitor(context: ContextTypes.DEFAULT_TYPE):
                     for m in matches_of_date:
                         if m.get("sport") == "n" and m["id"] in n_map:
                             n_data = n_map[m["id"]]
-                            if str(n_data["status"]["short"]) in ["3", "FT", "AOT"]:
+                            if str(n_data["status"]["short"]) in["3", "FT", "AOT"]:
                                 hg, ag = n_data['scores']['home']['points'], n_data['scores']['away']['points']
                                 m["score"] = f"{hg if hg is not None else 0}-{ag if ag is not None else 0}"
                                 await context.bot.send_message(state["chat_id"], f"🏁 **KẾT THÚC:** 🌟 {m['home']} {m['score']} {m['away']}")
@@ -581,7 +600,7 @@ def main():
         t = time(hour=5, minute=0, tzinfo=VN_TZ)
         app.job_queue.run_daily(morning_briefing, time=t)
         
-    print("🚀 SUPREME AI COMMANDER V10.0 (SMART FILTER & AUTO-REPORT) ĐÃ SẴN SÀNG!")
+    print("🚀 SUPREME AI COMMANDER V11.0 (BUG FIXED) ĐÃ SẴN SÀNG!")
     app.run_polling()
 
 if __name__ == "__main__": 
