@@ -26,7 +26,7 @@ DATA_DIR = "/data"
 if not os.path.exists(DATA_DIR):
     try: os.makedirs(DATA_DIR, exist_ok=True)
     except Exception: DATA_DIR = "." 
-DATA_FILE = os.path.join(DATA_DIR, "supreme_v9_data.json")
+DATA_FILE = os.path.join(DATA_DIR, "supreme_v10_data.json")
 
 # --- Cấu hình Gemini AI ---
 genai.configure(api_key=GENAI_API_KEY)
@@ -35,7 +35,7 @@ system_prompt = (
     "NGUYÊN TẮC TƯ DUY:\n"
     "1. CHUYÊN GIA BÓNG ĐÁ (⚽): Hiểu rõ phong độ, chiến thuật, chấn thương.\n"
     "2. CHUYÊN GIA BÓNG RỔ & NBA (🏀/🌟): Nắm vững kiến thức cực sâu về NBA, cầu thủ, chiến thuật, matchup tay đôi.\n"
-    "3. NHẬN XÉT SÂU SẮC: Phân tích lý do tại sao thắng/thua, yếu tố con người và cảnh báo rủi ro dựa trên [Hồ sơ Ông chủ].\n"
+    "3. NHẬN XÉT SÂU SẮC: Phân tích lý do tại sao thắng/thua, yếu tố con người và cảnh báo rủi ro dựa trên[Hồ sơ Ông chủ].\n"
     "4. TỔNG KẾT: Luôn đưa ra chốt kèo rõ ràng hoặc kết luận sắc bén."
 )
 ai_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=system_prompt, generation_config=genai.types.GenerationConfig(temperature=0.55))
@@ -65,7 +65,20 @@ def parse_match_time(utc_date_str):
         return dt.strftime("%H:%M"), dt.timestamp()
     except Exception: return "00:00", 0
 
-# HÀM MỚI: Tách Ngày tháng và Từ khóa từ câu lệnh của người dùng
+# HÀM MỚI: Kiểm tra xem trận đấu đã kết thúc hay chưa (Để lọc bỏ khỏi tìm kiếm)
+def is_finished(m, sport):
+    try:
+        if sport == 'f':
+            # Loại bỏ các trận Đã xong, Hủy, Hoãn
+            return m['fixture']['status']['short'] in['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'AWD', 'WO']
+        elif sport == 'n':
+            return str(m['status']['short']) in['3', 'FT', 'AOT', 'CANC', 'PST']
+        elif sport == 'b':
+            return str(m['status']['short']) in['FT', 'AOT', 'CANC', 'POST', 'ABD']
+    except Exception:
+        return False
+    return False
+
 def parse_date_and_query(args):
     now = datetime.now(VN_TZ)
     target_date = now.strftime("%Y-%m-%d")
@@ -83,9 +96,8 @@ def parse_date_and_query(args):
             query_parts.append(arg)
     return target_date, " ".join(query_parts).lower()
 
-# HÀM MỚI: Lấy danh sách Board dồn cục (Tất cả các trận đang chờ đá)
 def get_flattened_board():
-    matches = []
+    matches =[]
     for date_key, daily_matches in state["boards"].items():
         matches.extend([m for m in daily_matches if not m.get("notified")])
     matches.sort(key=lambda x: x.get("timestamp", 0))
@@ -106,27 +118,27 @@ async def get_match_context(m):
             return league, fmt_f(res_h), fmt_f(res_a)
         except: return league, "Lỗi API", "Lỗi API"
     else:
-        return league, "Dùng kiến thức AI để mổ xẻ trận này.", "Phân tích Matchup cá nhân."
+        return league, "Sử dụng kiến thức AI siêu việt để mổ xẻ trận này.", "Phân tích Matchup cá nhân và chiến thuật."
 
 # ===== 3. MENU START =====
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["chat_id"] = update.effective_chat.id
     save_data()
     menu = (
-        "🤵 **AI COMMANDER V9 - KHÔNG GIỚI HẠN**\n\n"
+        "🤵 **AI COMMANDER V10 - THỂ THAO TỐI THƯỢNG**\n\n"
         "🧠 **[ BỘ NÃO AI ]**\n"
         " ├ 💬 *Chat tự do để hỏi lịch, chiến thuật*\n"
         " ├ 📥 `/learn [Sở thích]` : Dạy AI nhớ gu\n"
         " ├ 📋 `/profile` : Xem hồ sơ\n"
         " └ 📊 `/summary` : Tổng kết ngày\n\n"
         "⚽🏀🌟 **[ TÌM KIẾM THỂ THAO ]**\n"
-        " *(Có thể thêm Ngày vào lệnh. VD: /matches 28/3)*\n"
-        " ├ 📅 `/matches [Ngày]` : Toàn bộ lịch\n"
+        " *(Hệ thống tự động lọc bỏ các trận Đã Xong/Bị hoãn)*\n"
+        " ├ 📅 `/matches [Ngày]` : Lịch thi đấu chưa đá\n"
         " ├ 🔍 `/search [Tên] [Ngày]` : Tìm Giải/Đội\n"
         " ├ ⏰ `/time [Giờ] [Ngày]` : Lọc trận theo giờ\n"
         " ├ 📊 `/board` : Bảng theo dõi Tổng\n"
         " ├ 📜 `/history` : Các trận đã xong\n"
-        " ├ ℹ️ `/detail [STT]` : Xem lịch sử 2 đội\n"
+        " ├ ℹ️ `/detail [STT]` : Xem chi tiết thủ công\n"
         " └ 🔮 `/predict [STT]` : Chuyên gia soi kèo\n\n"
         "📅 **[ NHẮC VIỆC ]**\n"
         " └ ➕ `/add` | 📜 `/list` | 📝 `/tnote`"
@@ -160,7 +172,6 @@ async def natural_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         profile_info = "\n".join(state.get("profile",[])) or "Chưa có."
         tasks_info = "\n".join([f"- {t['time']}: {t['content']}" for t in state["tasks"] if not t.get("reminded") or t["date"] == today_str]) or "- Rảnh"
         
-        # Lấy Board TỔNG
         active_boards = get_flattened_board()
         board_info = "\n".join([f"- {m.get('icon','⚽')} {m['home']} vs {m['away']} (Lúc {m.get('time')} ngày {m.get('date', today_str)})" for m in active_boards]) or "- Không"
 
@@ -169,7 +180,7 @@ async def natural_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"🤖 **AI:**\n{response.text}")
     except Exception: await update.message.reply_text("❌ Hệ thống nơ-ron đang bận.")
 
-# ===== 5. TÌM KIẾM THÔNG MINH (KHÔNG GIỚI HẠN & CÓ NGÀY) =====
+# ===== 5. TÌM KIẾM THÔNG MINH (CÓ LỌC TRẬN ĐÃ XONG) =====
 async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_date, _ = parse_date_and_query(context.args)
     kb =[]
@@ -177,24 +188,24 @@ async def matches_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         res_f = await client.get(f"https://v3.football.api-sports.io/fixtures?date={target_date}{TZ_PARAM}")
         for m in res_f.json().get("response",[]):
-            kb.append([InlineKeyboardButton(f"⚽[{parse_match_time(m['fixture']['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
+            if not is_finished(m, 'f'):
+                kb.append([InlineKeyboardButton(f"⚽[{parse_match_time(m['fixture']['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
         
         res_n = await client.get(f"https://v2.nba.api-sports.io/games?date={target_date}{TZ_PARAM}")
         for m in res_n.json().get("response",[]):
-            kb.append([InlineKeyboardButton(f"🌟[{parse_match_time(m['date']['start'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_n_{m['id']}")])
+            if not is_finished(m, 'n'):
+                kb.append([InlineKeyboardButton(f"🌟[{parse_match_time(m['date']['start'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_n_{m['id']}")])
             
         res_b = await client.get(f"https://v1.basketball.api-sports.io/games?date={target_date}{TZ_PARAM}")
         for m in res_b.json().get("response",[]):
-            kb.append([InlineKeyboardButton(f"🏀[{parse_match_time(m['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_b_{m['id']}")])
+            if not is_finished(m, 'b'):
+                kb.append([InlineKeyboardButton(f"🏀[{parse_match_time(m['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_b_{m['id']}")])
     except: pass
     
-    if not kb: return await update.message.reply_text(f"📭 Không có trận nào vào ngày {target_date}.")
+    if not kb: return await update.message.reply_text(f"📭 Không có trận nào (chưa đá) vào ngày {target_date}.")
     
-    # Telegram giới hạn 100 nút bấm, ta ngắt ở 90 để an toàn
-    msg = f"📅 **LỊCH THỂ THAO ({target_date}):**"
-    if len(kb) > 90:
-        kb = kb[:90]
-        msg += "\n*(Hiển thị 90 trận đầu tiên. Dùng /search để tìm chi tiết hơn)*"
+    msg = f"📅 **LỊCH THỂ THAO ({target_date}) - CHỈ HIỆN TRẬN CHƯA ĐÁ:**"
+    if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 trận đầu tiên. Dùng /search để tìm chi tiết hơn)*"
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,23 +217,23 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         res_f = await client.get(f"https://v3.football.api-sports.io/fixtures?date={target_date}{TZ_PARAM}")
         for m in res_f.json().get("response",[]):
-            if query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or query in m['league']['name'].lower():
+            if not is_finished(m, 'f') and (query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or query in m['league']['name'].lower()):
                 kb.append([InlineKeyboardButton(f"⚽ [{parse_match_time(m['fixture']['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
         
         res_n = await client.get(f"https://v2.nba.api-sports.io/games?date={target_date}{TZ_PARAM}")
         for m in res_n.json().get("response",[]):
-            if query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or "nba" in query:
+            if not is_finished(m, 'n') and (query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or "nba" in query):
                 kb.append([InlineKeyboardButton(f"🌟[{parse_match_time(m['date']['start'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_n_{m['id']}")])
                 
         res_b = await client.get(f"https://v1.basketball.api-sports.io/games?date={target_date}{TZ_PARAM}")
         for m in res_b.json().get("response",[]):
-            if query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or query in m['league']['name'].lower():
-                kb.append([InlineKeyboardButton(f"🏀 [{parse_match_time(m['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_b_{m['id']}")])
+            if not is_finished(m, 'b') and (query in m['teams']['home']['name'].lower() or query in m['teams']['away']['name'].lower() or query in m['league']['name'].lower()):
+                kb.append([InlineKeyboardButton(f"🏀[{parse_match_time(m['date'])[0]}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_b_{m['id']}")])
     except: pass
     
-    if not kb: return await update.message.reply_text(f"ℹ️ Không tìm thấy '{query.upper()}' trong ngày {target_date}.")
+    if not kb: return await update.message.reply_text(f"ℹ️ Không tìm thấy '{query.upper()}' (chưa đá) trong ngày {target_date}.")
     
-    msg = f"🔍 **KẾT QUẢ CHO '{query.upper()}' ({target_date}):**"
+    msg = f"🔍 **KẾT QUẢ CHO '{query.upper()}' ({target_date}) - CHỈ TRẬN CHƯA ĐÁ:**"
     if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 kết quả đầu)*"
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
@@ -235,22 +246,25 @@ async def time_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         res_f = await client.get(f"https://v3.football.api-sports.io/fixtures?date={target_date}{TZ_PARAM}")
         for m in res_f.json().get("response",[]):
-            t_str, _ = parse_match_time(m['fixture']['date'])
-            if (len(target_time) <= 2 and t_str.startswith(f"{target_time}:")) or (t_str == target_time):
-                kb.append([InlineKeyboardButton(f"⚽[{t_str}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
+            if not is_finished(m, 'f'):
+                t_str, _ = parse_match_time(m['fixture']['date'])
+                if (len(target_time) <= 2 and t_str.startswith(f"{target_time}:")) or (t_str == target_time):
+                    kb.append([InlineKeyboardButton(f"⚽[{t_str}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_f_{m['fixture']['id']}")])
                 
         res_n = await client.get(f"https://v2.nba.api-sports.io/games?date={target_date}{TZ_PARAM}")
         for m in res_n.json().get("response",[]):
-            t_str, _ = parse_match_time(m['date']['start'])
-            if (len(target_time) <= 2 and t_str.startswith(f"{target_time}:")) or (t_str == target_time):
-                kb.append([InlineKeyboardButton(f"🌟[{t_str}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_n_{m['id']}")])
+            if not is_finished(m, 'n'):
+                t_str, _ = parse_match_time(m['date']['start'])
+                if (len(target_time) <= 2 and t_str.startswith(f"{target_time}:")) or (t_str == target_time):
+                    kb.append([InlineKeyboardButton(f"🌟[{t_str}] {m['teams']['home']['name']} vs {m['teams']['away']['name']}", callback_data=f"pk_n_{m['id']}")])
     except: pass
     
-    if not kb: return await update.message.reply_text(f"ℹ️ Không có trận khung giờ `{target_time}` ngày {target_date}.")
-    msg = f"⏰ **KẾT QUẢ KHUNG GIỜ {target_time} ({target_date}):**"
+    if not kb: return await update.message.reply_text(f"ℹ️ Không có trận (chưa đá) khung giờ `{target_time}` ngày {target_date}.")
+    msg = f"⏰ **KẾT QUẢ KHUNG GIỜ {target_time} ({target_date}) - CHỈ TRẬN CHƯA ĐÁ:**"
     if len(kb) > 90: kb, msg = kb[:90], msg + "\n*(Hiển thị 90 kết quả đầu)*"
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
+# ===== 6. TỰ ĐỘNG BÁO CÁO KHI PICK (CHỨC NĂNG SIÊU VIỆT) =====
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -276,31 +290,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 t_str, ts = parse_match_time(m_data['date'])
                 icon, lg_name = "🏀", m_data['league']['name']
 
-            # Lấy ngày THỰC TẾ của trận đấu để lưu (Vô cùng quan trọng)
             actual_date = datetime.fromtimestamp(ts, VN_TZ).strftime("%Y-%m-%d")
             state["boards"].setdefault(actual_date, [])
             
             if any(m['id'] == fid and m.get('sport','f') == sport for m in state["boards"][actual_date]): 
                 return await query.answer("Trận này đã có sẵn trong Board!", show_alert=True)
 
-            state["boards"][actual_date].append({
+            new_match = {
                 "id": fid, "sport": sport, "icon": icon, "date": actual_date,
                 "home": m_data["teams"]["home"]["name"], "away": m_data["teams"]["away"]["name"], 
                 "time": t_str, "timestamp": ts, "league": lg_name, 
                 "home_id": m_data['teams']['home']['id'], "away_id": m_data['teams']['away']['id'],
                 "status_icon": "⏳", "note": "", "notified": False, "reminded_15m": False, "score": ""
-            })
+            }
+            state["boards"][actual_date].append(new_match)
             save_data()
             
-            # Tính STT của trận này trong Global Board để làm nút Ghi chú
-            active_boards = get_flattened_board()
-            idx = len(active_boards) # Vị trí cuối cùng
+            # Trả lời query nhanh để bot không bị loading
+            await query.answer(f"✅ Đã thêm: {new_match['home']} vs {new_match['away']}", show_alert=False)
             
-            await query.answer(f"✅ Pick thành công!", show_alert=False)
-            kb = [[InlineKeyboardButton("📝 Thêm ghi chú ngay", callback_data=f"asknote_m_{idx}")]]
+            # TỰ ĐỘNG BÁO CÁO LỊCH SỬ MATCH
+            await context.bot.send_chat_action(chat_id=query.message.chat_id, action="typing")
+            league, home_last, away_last = await get_match_context(new_match)
+            
+            active_boards = get_flattened_board()
+            idx = len(active_boards) - 1 # Vị trí của trận vừa thêm
+            
+            msg = (f"✅ **ĐÃ THÊM VÀO BOARD:** {icon} {new_match['home']} vs {new_match['away']} (Lúc {t_str} ngày {actual_date})\n"
+                   f"🏆 **GIẢI ĐẤU:** {league}\n\n"
+                   f"🛡️ **THÔNG TIN ({new_match['home']}):**\n{home_last}\n\n"
+                   f"⚔️ **THÔNG TIN ({new_match['away']}):**\n{away_last}")
+            
+            kb = [[InlineKeyboardButton("📝 Thêm ghi chú ngay", callback_data=f"asknote_m_{idx}")],[InlineKeyboardButton("🔮 AI Phân Tích & Soi Kèo", callback_data=f"ai_predict_{idx}")]
+            ]
+            
             await context.bot.send_message(
                 query.message.chat_id, 
-                f"✅ **ĐÃ THÊM VÀO BOARD:** {icon} {m_data['teams']['home']['name']} vs {m_data['teams']['away']['name']} (Lúc {t_str} ngày {actual_date})", 
+                msg, 
                 reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
             )
         except Exception as e: 
@@ -331,7 +357,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await asyncio.to_thread(chat_sessions[chat_id].send_message, prompt)
         await query.message.reply_text(f"🔮 **AI SOI KÈO ({m.get('icon','⚽')} {m['home']} vs {m['away']}):**\n\n{response.text}")
 
-# ===== 6. QUẢN LÝ BẢNG TỔNG (GLOBAL BOARD) =====
+# ===== 7. QUẢN LÝ BẢNG TỔNG (GLOBAL BOARD) =====
 async def board_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_boards = get_flattened_board()
     if not active_boards: return await update.message.reply_text("📭 Board trống.")
@@ -362,11 +388,10 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matches =[]
     for daily_matches in state["boards"].values():
         matches.extend([m for m in daily_matches if m.get("notified")])
-    matches.sort(key=lambda x: x.get("timestamp", 0), reverse=True) # Mới nhất xếp trên
+    matches.sort(key=lambda x: x.get("timestamp", 0), reverse=True) 
     
     if not matches: return await update.message.reply_text("📭 Chưa có trận nào kết thúc.")
     res = "📜 **HISTORY BOARD (Đã Xong):**\n"
-    # Giới hạn hiển thị 30 trận gần nhất để chống lag
     for i, m in enumerate(matches[:30]): 
         res += f"{i+1}. ✅ {m.get('icon','⚽')} {m['home']} {m.get('score', '')} {m['away']} ({m.get('date')[5:]})\n"
     await update.message.reply_text(res, parse_mode="Markdown")
@@ -376,12 +401,12 @@ async def mnote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         idx, note = int(context.args[0])-1, " ".join(context.args[1:])
         active_boards = get_flattened_board()
         m = active_boards[idx]
-        m["note"] = note # Sửa trực tiếp vào memory object
+        m["note"] = note 
         save_data()
         await update.message.reply_text(f"✅ Đã ghi chú cho trận {m['home']} vs {m['away']}")
     except Exception: await update.message.reply_text("❌ HD: `/mnote 1 Nội dung`")
 
-# ===== 7. NHẮC VIỆC & BÁO CÁO TỔNG KẾT =====
+# ===== 8. NHẮC VIỆC & BÁO CÁO =====
 async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         time_str, content = context.args[0], " ".join(context.args[1:])
@@ -456,14 +481,13 @@ async def morning_briefing(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, f"🌅 **BẢN TIN THỂ THAO SÁNG**\n\n{response.text}")
     except: pass
 
-# ===== 8. MONITOR TỐI ƯU API ĐA NGÀY =====
+# ===== 9. MONITOR TỐI ƯU API ĐA NGÀY =====
 async def monitor(context: ContextTypes.DEFAULT_TYPE):
     global last_api_check
     now = datetime.now(VN_TZ)
     today = now.strftime("%Y-%m-%d")
     if not state.get("chat_id"): return
     
-    # 1. Nhắc Việc trước 15 phút (Offline)
     for t in state["tasks"]:
         if not t.get("reminded") and t.get("date") == today:
             try:
@@ -474,7 +498,6 @@ async def monitor(context: ContextTypes.DEFAULT_TYPE):
                     save_data()
             except ValueError: continue
 
-    # 2. Quét Global Board (Tất cả các trận đang chờ)
     active_boards = get_flattened_board()
     
     for m in active_boards:
@@ -485,13 +508,10 @@ async def monitor(context: ContextTypes.DEFAULT_TYPE):
                 m["reminded_15m"] = True
                 save_data()
 
-    # 3. Update Kết Quả (Chỉ lấy những trận ĐÃ ĐẾN GIỜ ĐÁ trong Global Board)
     live_matches =[m for m in active_boards if "timestamp" in m and now.timestamp() >= m["timestamp"]]
     
     if now.timestamp() - last_api_check >= 600 and live_matches:
         last_api_check = now.timestamp()
-        
-        # Nhóm các trận Live theo ngày thực tế của chúng để lấy API cho chuẩn
         dates_to_check = set(m.get("date") for m in live_matches if m.get("date"))
         
         for check_date in dates_to_check:
@@ -530,7 +550,7 @@ async def monitor(context: ContextTypes.DEFAULT_TYPE):
                                 save_data()
                 except Exception: pass
 
-# ===== 9. MAIN =====
+# ===== 10. MAIN =====
 def main():
     load_data()
     app = ApplicationBuilder().token(BOT_TOKEN).defaults(Defaults(tzinfo=VN_TZ)).build()
@@ -561,7 +581,7 @@ def main():
         t = time(hour=5, minute=0, tzinfo=VN_TZ)
         app.job_queue.run_daily(morning_briefing, time=t)
         
-    print("🚀 SUPREME AI COMMANDER V9.0 (TIME MACHINE & BIG DATA) ĐÃ SẴN SÀNG!")
+    print("🚀 SUPREME AI COMMANDER V10.0 (SMART FILTER & AUTO-REPORT) ĐÃ SẴN SÀNG!")
     app.run_polling()
 
 if __name__ == "__main__": 
